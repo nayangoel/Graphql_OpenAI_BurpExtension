@@ -1,0 +1,446 @@
+from burp import IBurpExtender, ITab, IHttpListener, IProxyListener
+from java.awt import BorderLayout, GridBagLayout, GridBagConstraints, Insets
+from java.awt.event import ActionListener
+from javax.swing import JPanel, JTabbedPane, JButton, JTextArea, JScrollPane, JLabel, JTextField, JSplitPane
+from javax.swing import SwingUtilities, JOptionPane, BorderFactory
+import json
+import threading
+
+class BurpExtender(IBurpExtender, ITab, IHttpListener, ActionListener):
+    
+    def registerExtenderCallbacks(self, callbacks):
+        self._callbacks = callbacks
+        self._helpers = callbacks.getHelpers()
+        
+        callbacks.setExtensionName("GraphQL Security Tester")
+        
+        self.schema_extractor = GraphQLSchemaExtractor(callbacks, self._helpers)
+        self.query_generator = GPTQueryGenerator()
+        
+        SwingUtilities.invokeLater(self.createUI)
+        
+        callbacks.addSuiteTab(self)
+        callbacks.registerHttpListener(self)
+        
+        print("GraphQL Security Tester loaded successfully!")
+
+    def createUI(self):
+        self.main_panel = JPanel(BorderLayout())
+        
+        tabbed_pane = JTabbedPane()
+        
+        schema_tab = self.createSchemaTab()
+        generator_tab = self.createGeneratorTab()
+        results_tab = self.createResultsTab()
+        
+        tabbed_pane.addTab("Schema Extraction", schema_tab)
+        tabbed_pane.addTab("Query Generator", generator_tab)
+        tabbed_pane.addTab("Results", results_tab)
+        
+        self.main_panel.add(tabbed_pane, BorderLayout.CENTER)
+
+    def createSchemaTab(self):
+        panel = JPanel(BorderLayout())
+        
+        top_panel = JPanel(GridBagLayout())
+        gbc = GridBagConstraints()
+        gbc.insets = Insets(5, 5, 5, 5)
+        
+        gbc.gridx = 0
+        gbc.gridy = 0
+        top_panel.add(JLabel("GraphQL Endpoint:"), gbc)
+        
+        gbc.gridx = 1
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        gbc.weightx = 1.0
+        self.endpoint_field = JTextField()
+        top_panel.add(self.endpoint_field, gbc)
+        
+        gbc.gridx = 2
+        gbc.fill = GridBagConstraints.NONE
+        gbc.weightx = 0.0
+        self.introspect_btn = JButton("Introspect Schema", actionPerformed=self.introspectSchema)
+        top_panel.add(self.introspect_btn, gbc)
+        
+        panel.add(top_panel, BorderLayout.NORTH)
+        
+        schema_panel = JPanel(BorderLayout())
+        schema_panel.setBorder(BorderFactory.createTitledBorder("Schema (JSON)"))
+        
+        self.schema_text = JTextArea(20, 50)
+        self.schema_text.setLineWrap(True)
+        schema_scroll = JScrollPane(self.schema_text)
+        schema_panel.add(schema_scroll, BorderLayout.CENTER)
+        
+        button_panel = JPanel()
+        self.load_schema_btn = JButton("Load Manual Schema", actionPerformed=self.loadManualSchema)
+        self.parse_schema_btn = JButton("Parse Schema", actionPerformed=self.parseSchema)
+        button_panel.add(self.load_schema_btn)
+        button_panel.add(self.parse_schema_btn)
+        schema_panel.add(button_panel, BorderLayout.SOUTH)
+        
+        panel.add(schema_panel, BorderLayout.CENTER)
+        
+        return panel
+
+    def createGeneratorTab(self):
+        panel = JPanel(BorderLayout())
+        
+        config_panel = JPanel(GridBagLayout())
+        config_panel.setBorder(BorderFactory.createTitledBorder("GPT Configuration"))
+        gbc = GridBagConstraints()
+        gbc.insets = Insets(5, 5, 5, 5)
+        
+        gbc.gridx = 0
+        gbc.gridy = 0
+        config_panel.add(JLabel("API Key:"), gbc)
+        
+        gbc.gridx = 1
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        gbc.weightx = 1.0
+        self.api_key_field = JTextField()
+        config_panel.add(self.api_key_field, gbc)
+        
+        gbc.gridx = 0
+        gbc.gridy = 1
+        gbc.fill = GridBagConstraints.NONE
+        gbc.weightx = 0.0
+        config_panel.add(JLabel("Test Type:"), gbc)
+        
+        gbc.gridx = 1
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        gbc.weightx = 1.0
+        self.test_type_field = JTextField("SQL Injection, Authorization Bypass, DoS")
+        config_panel.add(self.test_type_field, gbc)
+        
+        panel.add(config_panel, BorderLayout.NORTH)
+        
+        split_pane = JSplitPane(JSplitPane.VERTICAL_SPLIT)
+        
+        queries_panel = JPanel(BorderLayout())
+        queries_panel.setBorder(BorderFactory.createTitledBorder("Generated Queries"))
+        
+        self.queries_text = JTextArea(15, 50)
+        self.queries_text.setLineWrap(True)
+        queries_scroll = JScrollPane(self.queries_text)
+        queries_panel.add(queries_scroll, BorderLayout.CENTER)
+        
+        gen_button_panel = JPanel()
+        self.generate_btn = JButton("Generate Malicious Queries", actionPerformed=self.generateQueries)
+        self.test_queries_btn = JButton("Test Queries", actionPerformed=self.testQueries)
+        gen_button_panel.add(self.generate_btn)
+        gen_button_panel.add(self.test_queries_btn)
+        queries_panel.add(gen_button_panel, BorderLayout.SOUTH)
+        
+        split_pane.setTopComponent(queries_panel)
+        
+        results_panel = JPanel(BorderLayout())
+        results_panel.setBorder(BorderFactory.createTitledBorder("Query Results"))
+        
+        self.results_text = JTextArea(10, 50)
+        self.results_text.setLineWrap(True)
+        results_scroll = JScrollPane(self.results_text)
+        results_panel.add(results_scroll, BorderLayout.CENTER)
+        
+        split_pane.setBottomComponent(results_panel)
+        split_pane.setDividerLocation(400)
+        
+        panel.add(split_pane, BorderLayout.CENTER)
+        
+        return panel
+
+    def createResultsTab(self):
+        panel = JPanel(BorderLayout())
+        
+        self.full_results_text = JTextArea()
+        self.full_results_text.setLineWrap(True)
+        self.full_results_text.setEditable(False)
+        
+        scroll = JScrollPane(self.full_results_text)
+        panel.add(scroll, BorderLayout.CENTER)
+        
+        return panel
+
+    def introspectSchema(self, event):
+        endpoint = self.endpoint_field.getText().strip()
+        if not endpoint:
+            JOptionPane.showMessageDialog(self.main_panel, "Please enter a GraphQL endpoint")
+            return
+        
+        threading.Thread(target=self._performIntrospection, args=[endpoint]).start()
+
+    def _performIntrospection(self, endpoint):
+        try:
+            schema = self.schema_extractor.introspect_schema(endpoint)
+            SwingUtilities.invokeLater(lambda: self.schema_text.setText(json.dumps(schema, indent=2)))
+        except Exception as e:
+            SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self.main_panel, "Introspection failed: " + str(e)))
+
+    def loadManualSchema(self, event):
+        pass
+
+    def parseSchema(self, event):
+        schema_text = self.schema_text.getText().strip()
+        if not schema_text:
+            JOptionPane.showMessageDialog(self.main_panel, "Please provide a schema")
+            return
+        
+        try:
+            schema = json.loads(schema_text)
+            self.parsed_schema = schema
+            JOptionPane.showMessageDialog(self.main_panel, "Schema parsed successfully!")
+        except Exception as e:
+            JOptionPane.showMessageDialog(self.main_panel, "Schema parsing failed: " + str(e))
+
+    def generateQueries(self, event):
+        if not hasattr(self, 'parsed_schema'):
+            JOptionPane.showMessageDialog(self.main_panel, "Please parse a schema first")
+            return
+        
+        api_key = self.api_key_field.getText().strip()
+        test_types = self.test_type_field.getText().strip()
+        
+        if not api_key:
+            JOptionPane.showMessageDialog(self.main_panel, "Please enter your OpenAI API key")
+            return
+        
+        threading.Thread(target=self._generateQueries, args=[api_key, test_types]).start()
+
+    def _generateQueries(self, api_key, test_types):
+        try:
+            queries = self.query_generator.generate_malicious_queries(self.parsed_schema, api_key, test_types)
+            SwingUtilities.invokeLater(lambda: self.queries_text.setText('\n\n'.join(queries)))
+        except Exception as e:
+            SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self.main_panel, "Query generation failed: " + str(e)))
+
+    def testQueries(self, event):
+        queries = self.queries_text.getText().strip()
+        endpoint = self.endpoint_field.getText().strip()
+        
+        if not queries or not endpoint:
+            JOptionPane.showMessageDialog(self.main_panel, "Please provide queries and endpoint")
+            return
+        
+        threading.Thread(target=self._testQueries, args=[queries, endpoint]).start()
+
+    def _testQueries(self, queries, endpoint):
+        query_list = [q.strip() for q in queries.split('\n\n') if q.strip()]
+        results = []
+        
+        for i, query in enumerate(query_list):
+            try:
+                result = self.schema_extractor.test_query(endpoint, query)
+                results.append(f"Query {i+1} Result:\n{result}\n" + "="*50)
+            except Exception as e:
+                results.append(f"Query {i+1} Error: {str(e)}\n" + "="*50)
+        
+        final_results = '\n\n'.join(results)
+        SwingUtilities.invokeLater(lambda: self.results_text.setText(final_results))
+        SwingUtilities.invokeLater(lambda: self.full_results_text.setText(final_results))
+
+    def getTabCaption(self):
+        return "GraphQL Tester"
+
+    def getUiComponent(self):
+        return self.main_panel
+
+    def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
+        pass
+
+
+class GraphQLSchemaExtractor:
+    def __init__(self, callbacks, helpers):
+        self.callbacks = callbacks
+        self.helpers = helpers
+
+    def introspect_schema(self, endpoint):
+        introspection_query = """
+        query IntrospectionQuery {
+          __schema {
+            queryType { name }
+            mutationType { name }
+            subscriptionType { name }
+            types {
+              ...FullType
+            }
+            directives {
+              name
+              description
+              locations
+              args {
+                ...InputValue
+              }
+            }
+          }
+        }
+
+        fragment FullType on __Type {
+          kind
+          name
+          description
+          fields(includeDeprecated: true) {
+            name
+            description
+            args {
+              ...InputValue
+            }
+            type {
+              ...TypeRef
+            }
+            isDeprecated
+            deprecationReason
+          }
+          inputFields {
+            ...InputValue
+          }
+          interfaces {
+            ...TypeRef
+          }
+          enumValues(includeDeprecated: true) {
+            name
+            description
+            isDeprecated
+            deprecationReason
+          }
+          possibleTypes {
+            ...TypeRef
+          }
+        }
+
+        fragment InputValue on __InputValue {
+          name
+          description
+          type { ...TypeRef }
+          defaultValue
+        }
+
+        fragment TypeRef on __Type {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+              ofType {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                      ofType {
+                        kind
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        
+        import urllib2
+        
+        data = json.dumps({"query": introspection_query})
+        
+        req = urllib2.Request(endpoint)
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('User-Agent', 'GraphQL Security Tester')
+        
+        response = urllib2.urlopen(req, data)
+        result = json.loads(response.read())
+        
+        if 'errors' in result:
+            raise Exception("Introspection errors: " + str(result['errors']))
+        
+        return result['data']['__schema']
+
+    def test_query(self, endpoint, query):
+        import urllib2
+        
+        data = json.dumps({"query": query})
+        
+        req = urllib2.Request(endpoint)
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('User-Agent', 'GraphQL Security Tester')
+        
+        response = urllib2.urlopen(req, data)
+        return response.read()
+
+
+class GPTQueryGenerator:
+    def generate_malicious_queries(self, schema, api_key, test_types):
+        try:
+            import urllib2
+            
+            schema_summary = self._summarize_schema(schema)
+            
+            prompt = f"""
+You are a security researcher testing GraphQL endpoints. Based on the following GraphQL schema, generate malicious/security test queries for: {test_types}
+
+Schema summary:
+{schema_summary}
+
+Generate 5-10 GraphQL queries that test for common vulnerabilities like:
+- SQL injection attempts
+- Authorization bypass
+- DoS via deep nesting
+- Information disclosure
+- Input validation bypass
+
+Return only the GraphQL queries, one per section.
+"""
+
+            payload = {
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1500,
+                "temperature": 0.7
+            }
+            
+            data = json.dumps(payload)
+            
+            req = urllib2.Request("https://api.openai.com/v1/chat/completions")
+            req.add_header('Content-Type', 'application/json')
+            req.add_header('Authorization', 'Bearer ' + api_key)
+            
+            response = urllib2.urlopen(req, data)
+            result = json.loads(response.read())
+            
+            content = result['choices'][0]['message']['content']
+            
+            queries = []
+            for section in content.split('```'):
+                if 'query' in section.lower() or '{' in section:
+                    clean_query = section.strip()
+                    if clean_query and (clean_query.startswith('query') or clean_query.startswith('{')):
+                        queries.append(clean_query)
+            
+            return queries if queries else [content]
+            
+        except Exception as e:
+            raise Exception("GPT query generation failed: " + str(e))
+
+    def _summarize_schema(self, schema):
+        summary = []
+        
+        if 'types' in schema:
+            for type_def in schema['types']:
+                if type_def['kind'] == 'OBJECT' and not type_def['name'].startswith('__'):
+                    type_name = type_def['name']
+                    fields = []
+                    if type_def.get('fields'):
+                        for field in type_def['fields'][:5]:  # Limit to first 5 fields
+                            fields.append(field['name'])
+                    summary.append(f"Type {type_name}: {', '.join(fields)}")
+        
+        return '\n'.join(summary[:10])  # Limit summary length
