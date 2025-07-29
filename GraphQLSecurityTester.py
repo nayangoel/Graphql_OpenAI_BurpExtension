@@ -984,6 +984,10 @@ REQUIREMENTS:
 4. Keep the same operation type (query/mutation) as the target
 5. Generate 4-6 different malicious variants
 6. Each variant should test a different attack vector
+7. Look at the schema and find the exact query/mutation that matches the target query structure and use it as a base for variants.
+8. If the target query is a mutation, ensure the variants are also mutations with malicious inputs.
+9. If the target query is a query, ensure the variants are also queries with malicious inputs.
+10. Do not invent fields that do not exist in the schema.
 
 Return only valid GraphQL queries that maintain the target query's structure while adding malicious elements.
 """.format(schema_summary, target_query)
