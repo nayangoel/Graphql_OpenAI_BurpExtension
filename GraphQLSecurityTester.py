@@ -1,7 +1,7 @@
-from burp import IBurpExtender, ITab, IHttpListener, IExtensionStateListener
+from burp import IBurpExtender, ITab, IHttpListener, IExtensionStateListener, IContextMenuFactory, IContextMenuInvocation
 from java.awt import BorderLayout, GridBagLayout, GridBagConstraints, Insets
 from java.awt.event import ActionListener
-from javax.swing import JPanel, JTabbedPane, JButton, JTextArea, JScrollPane, JLabel, JTextField, JSplitPane
+from javax.swing import JPanel, JTabbedPane, JButton, JTextArea, JScrollPane, JLabel, JTextField, JSplitPane, JMenuItem
 from javax.swing import SwingUtilities, JOptionPane, BorderFactory
 import json
 import threading
@@ -10,7 +10,7 @@ from java.lang import Thread, Runnable
 from java.util.concurrent import ThreadPoolExecutor, Executors
 from java.net import URL
 
-class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, ActionListener):
+class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, IContextMenuFactory, ActionListener):
     
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
@@ -33,6 +33,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         
         callbacks.registerHttpListener(self)
         callbacks.registerExtensionStateListener(self)
+        callbacks.registerContextMenuFactory(self)
         
         print("GraphQL Security Tester loaded successfully!")
 
@@ -137,10 +138,24 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         
         panel.add(config_panel, BorderLayout.NORTH)
         
+        # Add input query panel
+        input_panel = JPanel(BorderLayout())
+        input_panel.setBorder(BorderFactory.createTitledBorder("Target Query/Mutation to Test"))
+        
+        self.target_query_text = JTextArea(8, 50)
+        self.target_query_text.setLineWrap(True)
+        self.target_query_text.setText("# Paste the GraphQL query/mutation you want to test here\n# Example:\n# query getUser($id: ID!) {\n#   user(id: $id) {\n#     id\n#     name\n#     email\n#   }\n# }")
+        target_scroll = JScrollPane(self.target_query_text)
+        input_panel.add(target_scroll, BorderLayout.CENTER)
+        
+        # Create a new split pane with three sections
+        main_split = JSplitPane(JSplitPane.VERTICAL_SPLIT)
+        main_split.setTopComponent(input_panel)
+        
         split_pane = JSplitPane(JSplitPane.VERTICAL_SPLIT)
         
         queries_panel = JPanel(BorderLayout())
-        queries_panel.setBorder(BorderFactory.createTitledBorder("Generated Queries"))
+        queries_panel.setBorder(BorderFactory.createTitledBorder("Generated Malicious Variants"))
         
         self.queries_text = JTextArea(15, 50)
         self.queries_text.setLineWrap(True)
@@ -148,7 +163,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         queries_panel.add(queries_scroll, BorderLayout.CENTER)
         
         gen_button_panel = JPanel()
-        self.generate_btn = JButton("Generate Malicious Queries", actionPerformed=self.generateQueries)
+        self.generate_btn = JButton("Generate Malicious Variants", actionPerformed=self.generateQueries)
         self.test_queries_btn = JButton("Test Queries", actionPerformed=self.testQueries)
         gen_button_panel.add(self.generate_btn)
         gen_button_panel.add(self.test_queries_btn)
@@ -159,15 +174,18 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         results_panel = JPanel(BorderLayout())
         results_panel.setBorder(BorderFactory.createTitledBorder("Query Results"))
         
-        self.results_text = JTextArea(10, 50)
+        self.results_text = JTextArea(8, 50)
         self.results_text.setLineWrap(True)
         results_scroll = JScrollPane(self.results_text)
         results_panel.add(results_scroll, BorderLayout.CENTER)
         
         split_pane.setBottomComponent(results_panel)
-        split_pane.setDividerLocation(400)
+        split_pane.setDividerLocation(300)
         
-        panel.add(split_pane, BorderLayout.CENTER)
+        main_split.setBottomComponent(split_pane)
+        main_split.setDividerLocation(200)
+        
+        panel.add(main_split, BorderLayout.CENTER)
         
         return panel
 
@@ -276,33 +294,39 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         
         api_key = self.api_key_field.getText().strip()
         test_types = self.test_type_field.getText().strip()
+        target_query = self.target_query_text.getText().strip()
         
         if not api_key:
             JOptionPane.showMessageDialog(self.main_panel, "Please enter your OpenAI API key")
             return
+            
+        if not target_query or target_query.startswith("#"):
+            JOptionPane.showMessageDialog(self.main_panel, "Please provide a target query/mutation to test")
+            return
         
         # Use managed thread executor
         if not self._shutdown:
-            self._executor.submit(self._createQueryGenerationRunnable(api_key, test_types))
+            self._executor.submit(self._createQueryGenerationRunnable(api_key, test_types, target_query))
 
-    def _createQueryGenerationRunnable(self, api_key, test_types):
+    def _createQueryGenerationRunnable(self, api_key, test_types, target_query):
         """Create a runnable for query generation"""
         class QueryGenerationRunnable(Runnable):
-            def __init__(self, extender, api_key, test_types):
+            def __init__(self, extender, api_key, test_types, target_query):
                 self.extender = extender
                 self.api_key = api_key
                 self.test_types = test_types
+                self.target_query = target_query
             
             def run(self):
                 if self.extender._shutdown:
                     return
                 try:
-                    queries = self.extender.query_generator.generate_malicious_queries(self.extender.parsed_schema, self.api_key, self.test_types)
+                    queries = self.extender.query_generator.generate_malicious_variants(self.extender.parsed_schema, self.api_key, self.test_types, self.target_query)
                     SwingUtilities.invokeLater(lambda: self.extender.queries_text.setText('\n\n'.join(queries)))
                 except Exception as e:
-                            SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self.main_panel, "Query generation failed: " + str(e)))
+                            SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self.extender.main_panel, "Query generation failed: " + str(e)))
         
-        return QueryGenerationRunnable(self, api_key, test_types)
+        return QueryGenerationRunnable(self, api_key, test_types, target_query)
 
     def testQueries(self, event):
         queries = self.queries_text.getText().strip()
@@ -353,6 +377,165 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
 
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         pass
+    
+    def createMenuItems(self, invocation):
+        menu_items = []
+        
+        # Only show menu for proxy requests/responses
+        if invocation.getInvocationContext() in [IContextMenuInvocation.CONTEXT_PROXY_HISTORY, 
+                                                IContextMenuInvocation.CONTEXT_TARGET_SITE_MAP_TABLE,
+                                                IContextMenuInvocation.CONTEXT_TARGET_SITE_MAP_TREE]:
+            
+            # Get the selected HTTP message
+            selected_messages = invocation.getSelectedMessages()
+            
+            if selected_messages:
+                for message in selected_messages:
+                    if self._isGraphQLRequest(message):
+                        menu_item = JMenuItem("Load GraphQL query in Security Tester")
+                        menu_item.addActionListener(lambda event, msg=message: self._loadGraphQLFromProxy(msg))
+                        menu_items.append(menu_item)
+                        break
+        
+        return menu_items
+    
+    def _isGraphQLRequest(self, message):
+        try:
+            request = message.getRequest()
+            request_info = self._helpers.analyzeRequest(request)
+            
+            # Check if request contains GraphQL indicators
+            request_str = self._helpers.bytesToString(request)
+            
+            # Look for GraphQL patterns
+            if ('query' in request_str.lower() or 
+                'mutation' in request_str.lower() or 
+                'subscription' in request_str.lower() or
+                'application/json' in request_str and 
+                ('__schema' in request_str or '__type' in request_str)):
+                return True
+            
+            # Check Content-Type for GraphQL
+            headers = request_info.getHeaders()
+            for header in headers:
+                if header.lower().startswith('content-type:') and 'graphql' in header.lower():
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            print("[DEBUG] Error checking GraphQL request: " + str(e))
+            return False
+    
+    def _loadGraphQLFromProxy(self, message):
+        try:
+            # Extract GraphQL query from the request
+            query = self._extractGraphQLQuery(message)
+            
+            if query:
+                # Load the query into the schema text area
+                SwingUtilities.invokeLater(lambda: self._loadQueryIntoTool(query, message))
+            else:
+                SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(
+                    self.main_panel, 
+                    "Could not extract GraphQL query from this request",
+                    "Extraction Failed",
+                    JOptionPane.WARNING_MESSAGE
+                ))
+                
+        except Exception as e:
+            SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(
+                self.main_panel,
+                "Error loading GraphQL query: " + str(e),
+                "Error",
+                JOptionPane.ERROR_MESSAGE
+            ))
+    
+    def _extractGraphQLQuery(self, message):
+        try:
+            request = message.getRequest()
+            request_info = self._helpers.analyzeRequest(request)
+            
+            # Get request body - return the whole body instead of parsing
+            body_offset = request_info.getBodyOffset()
+            request_body = request[body_offset:]
+            body_str = self._helpers.bytesToString(request_body)
+            
+            # Return the entire request body to preserve JSON structure
+            if body_str.strip():
+                return body_str.strip()
+            
+            return None
+            
+        except Exception as e:
+            print("[DEBUG] Error extracting GraphQL query: " + str(e))
+            return None
+    
+    def _loadQueryIntoTool(self, query, message):
+        try:
+            # Also extract endpoint URL from the request
+            request = message.getRequest()
+            http_service = message.getHttpService()
+            
+            # Use the overloaded analyzeRequest method with HTTP service details
+            request_info = self._helpers.analyzeRequest(http_service, request)
+            
+            # Build the full URL
+            protocol = "https" if http_service.getPort() == 443 else "http"
+            host = http_service.getHost()
+            port = http_service.getPort()
+            path = request_info.getUrl().getPath()
+            
+            if port not in [80, 443]:
+                endpoint_url = "{0}://{1}:{2}{3}".format(protocol, host, port, path)
+            else:
+                endpoint_url = "{0}://{1}{2}".format(protocol, host, path)
+            
+            # Set the endpoint in the schema tab
+            self.endpoint_field.setText(endpoint_url)
+            
+            # Create a formatted display of the extracted query
+            formatted_content = "// Extracted from proxy request\n"
+            formatted_content += "// URL: {0}\n\n".format(endpoint_url)
+            formatted_content += query
+            
+            # Put the query in the schema text area as a starting point
+            # User can then introspect to get the full schema
+            self.schema_text.setText(formatted_content)
+            
+            # Extract just the GraphQL query/mutation part from the request body
+            try:
+                import json
+                json_data = json.loads(query)
+                if isinstance(json_data, dict) and 'query' in json_data:
+                    clean_query = json_data['query']
+                else:
+                    clean_query = query
+            except:
+                clean_query = query
+            
+            # Put the clean query in the target query field for variant generation
+            self.target_query_text.setText(clean_query)
+            
+            # Clear the generated queries area - user will generate variants from the target
+            self.queries_text.setText("# Click 'Generate Malicious Variants' to create test cases for the loaded query")
+            
+            # Show success message
+            JOptionPane.showMessageDialog(
+                self.main_panel,
+                "GraphQL query loaded successfully!\n\nEndpoint: {0}\n\nQuery has been loaded in both Schema and Query Generator tabs.".format(endpoint_url),
+                "Query Loaded",
+                JOptionPane.INFORMATION_MESSAGE
+            )
+            
+        except Exception as e:
+            print("[DEBUG] Error loading query into tool: " + str(e))
+            JOptionPane.showMessageDialog(
+                self.main_panel,
+                "Error loading query: " + str(e),
+                "Error",
+                JOptionPane.ERROR_MESSAGE
+            )
     
     def _safe_json_parse(self, json_text):
         """Safely parse JSON from untrusted input"""
@@ -629,10 +812,10 @@ Schema details:
 {1}
 
 Generate 5-6 specific GraphQL queries using the EXACT field names from the schema above to test for:
-- SQL injection attempts (using actual string/ID fields with malicious payloads)
+- SQL injection attempts (using actual string/ID fields with malicious payloads. If variables are available, use them and add malicious inputs to that)
 - Authorization bypass (accessing restricted fields that exist in the schema)
 - Information disclosure (requesting sensitive fields that exist)
-- Input validation bypass (using actual mutation fields with malicious inputs)
+- Input validation bypass (using actual mutation fields with malicious inputs,If variables are available, use them and add malicious inputs to that)
 
 Each query must use real field names from the provided schema. Do not use generic field names like 'users', 'posts' unless they appear in the schema.
 
@@ -769,6 +952,170 @@ Return only valid GraphQL queries that match the schema structure.
             # Provide offline fallback queries for security testing
             return self._get_offline_queries(schema, test_types)
     
+    def generate_malicious_variants(self, schema, api_key, test_types, target_query):
+        """Generate malicious variants of a specific target query/mutation"""
+        try:
+            print("[DEBUG] Starting targeted variant generation...")
+            print("[DEBUG] Test types: " + str(test_types))
+            print("[DEBUG] Target query: " + target_query[:200] + "...")
+            
+            schema_summary = self._summarize_schema(schema)
+            print("[DEBUG] Schema summary length: " + str(len(schema_summary)))
+            
+            prompt = """
+You are a security researcher testing a specific GraphQL query/mutation. Based on the schema provided and the target query below, generate malicious variants to test for security vulnerabilities.
+
+SCHEMA:
+{0}
+
+TARGET QUERY/MUTATION TO TEST:
+{1}
+
+TASK: Create malicious variants of the target query above to test for:
+- Authorization bypass (modify parameters to access restricted data)
+- Data exfiltration (request additional sensitive fields that exist in schema)
+- Input validation bypass (inject malicious payloads into variables/parameters)
+- SQL injection attempts (modify string/ID parameters with injection payloads)
+
+REQUIREMENTS:
+1. Use the EXACT structure of the target query as a base
+2. Only use field names and types that exist in the provided schema
+3. If the target query uses variables, create variants with malicious variable values
+4. Keep the same operation type (query/mutation) as the target
+5. Generate 4-6 different malicious variants
+6. Each variant should test a different attack vector
+
+Return only valid GraphQL queries that maintain the target query's structure while adding malicious elements.
+""".format(schema_summary, target_query)
+
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1500,
+                "temperature": 0.7,
+                "stream": False
+            }
+            
+            data = json.dumps(payload)
+            
+            # Use Burp's HTTP service for OpenAI API calls
+            from java.net import URL
+            
+            url = URL("https://api.openai.com/v1/chat/completions")
+            host = url.getHost()
+            port = url.getPort() if url.getPort() != -1 else 443
+            
+            # Create HTTP service
+            http_service = self.helpers.buildHttpService(host, port, True)  # HTTPS
+            
+            # Create the HTTP request
+            headers = [
+                "POST /v1/chat/completions HTTP/1.1",
+                "Host: " + host,
+                "Content-Type: application/json",
+                "Authorization: Bearer " + api_key,
+                "Content-Length: " + str(len(data)),
+                "",
+                data
+            ]
+            
+            request_bytes = self.helpers.stringToBytes("\r\n".join(headers))
+            
+            # Retry logic for rate limits
+            max_retries = 3
+            print("[DEBUG] Making API request to OpenAI for variants...")
+            
+            for attempt in range(max_retries):
+                try:
+                    print("[DEBUG] Attempt " + str(attempt + 1) + " of " + str(max_retries))
+                    
+                    # Make the request using Burp's HTTP service
+                    response = self.callbacks.makeHttpRequest(http_service, request_bytes)
+                    response_info = self.helpers.analyzeResponse(response.getResponse())
+                    
+                    # Check status code
+                    status_code = response_info.getStatusCode()
+                    print("[DEBUG] Response status: " + str(status_code))
+                    
+                    if status_code == 200:
+                        # Extract response body
+                        response_body = response.getResponse()[response_info.getBodyOffset():]
+                        response_str = self.helpers.bytesToString(response_body)
+                        result = json.loads(response_str)
+                        print("[DEBUG] API request successful")
+                        break
+                    elif status_code == 429 and attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 5  # Longer waits: 5s, 10s, 20s
+                        print("[DEBUG] Rate limited, waiting " + str(wait_time) + " seconds...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception("HTTP " + str(status_code) + " error from OpenAI API")
+                        
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        print("[DEBUG] All attempts failed: " + str(e))
+                        raise e
+                    else:
+                        print("[DEBUG] Attempt failed, retrying: " + str(e))
+                        time.sleep(2)
+            
+            content = result['choices'][0]['message']['content']
+            print("[DEBUG] Received response from OpenAI, length: " + str(len(content)))
+            
+            queries = []
+            sections = content.split('```')
+            print("[DEBUG] Found " + str(len(sections)) + " sections in response")
+            
+            for i, section in enumerate(sections):
+                # More flexible query extraction
+                clean_section = section.strip()
+                if clean_section:
+                    # Look for GraphQL queries in various formats
+                    if (clean_section.startswith('query') or 
+                        clean_section.startswith('mutation') or 
+                        clean_section.startswith('{') or
+                        ('query' in clean_section.lower() and '{' in clean_section)):
+                        
+                        # Clean up the query
+                        if 'graphql' in clean_section.lower():
+                            # Remove language identifier
+                            lines = clean_section.split('\n')
+                            clean_section = '\n'.join([line for line in lines if 'graphql' not in line.lower()])
+                        
+                        queries.append(clean_section.strip())
+                        print("[DEBUG] Added variant " + str(len(queries)) + " from section " + str(i))
+            
+            print("[DEBUG] Total variants extracted: " + str(len(queries)))
+            
+            # If no queries found, try alternative extraction
+            if len(queries) == 0:
+                print("[DEBUG] No variants found, trying alternative extraction...")
+                # Look for any content that looks like GraphQL
+                lines = content.split('\n')
+                current_query = []
+                in_query = False
+                
+                for line in lines:
+                    if ('query' in line.lower() or 'mutation' in line.lower()) and '{' in line:
+                        in_query = True
+                        current_query = [line]
+                    elif in_query:
+                        current_query.append(line)
+                        if '}' in line and line.count('}') >= line.count('{'):
+                            queries.append('\n'.join(current_query))
+                            current_query = []
+                            in_query = False
+                
+                print("[DEBUG] Alternative extraction found: " + str(len(queries)) + " variants")
+            
+            return queries if queries else [content]
+            
+        except Exception as e:
+            print("[DEBUG] Variant generation failed, using offline fallback: " + str(e))
+            # Provide basic variants of the target query
+            return self._get_offline_variants(target_query, schema, test_types)
+    
     def _get_offline_queries(self, schema, test_types):
         """Generate basic security test queries offline"""
         queries = []
@@ -787,6 +1134,40 @@ Return only valid GraphQL queries that match the schema structure.
                         queries.append("query { " + field_name + "(input: {id: \"<script>alert(1)</script>\"}) { __typename } }")
         
         return queries[:10]  # Limit number of queries for performance
+
+    def _get_offline_variants(self, target_query, schema, test_types):
+        """Generate basic offline variants of the target query"""
+        variants = []
+        
+        # Add the original query as reference
+        variants.append("# Original query:\n" + target_query)
+        
+        # Try to create simple malicious variants
+        import re
+        
+        # Look for string parameters and add injection payloads
+        if 'id:' in target_query:
+            # SQL injection variant
+            injected = re.sub(r'id:\s*"[^"]*"', 'id: "1\' OR \'1\'=\'1"', target_query)
+            variants.append("# SQL Injection variant:\n" + injected)
+            
+            # XSS variant
+            xss_injected = re.sub(r'id:\s*"[^"]*"', 'id: "<script>alert(1)</script>"', target_query)
+            variants.append("# XSS variant:\n" + xss_injected)
+        
+        # If it's a mutation, try to add malicious fields
+        if target_query.strip().startswith('mutation'):
+            # Try to add __typename for information disclosure
+            if '{' in target_query and '__typename' not in target_query:
+                lines = target_query.split('\n')
+                for i, line in enumerate(lines):
+                    if '{' in line and line.strip() != '{':
+                        lines.insert(i+1, '    __typename')
+                        break
+                info_variant = '\n'.join(lines)
+                variants.append("# Information disclosure variant:\n" + info_variant)
+        
+        return variants[:5]  # Limit variants
 
     def _summarize_schema(self, schema):
         summary = []
@@ -843,82 +1224,74 @@ Return only valid GraphQL queries that match the schema structure.
             print("[DEBUG] Query value type: " + str(type(schema.get('query'))))
             print("[DEBUG] Query value: " + str(schema.get('query'))[:200] + "...")
             
-            # This might be a raw GraphQL schema string
+            # This is a GraphQL query/mutation from proxy request
             if isinstance(schema.get('query'), (str, unicode)):
-                print("[DEBUG] Found raw GraphQL schema string, parsing...")
-                schema_text = schema.get('query', '')
+                print("[DEBUG] Found GraphQL query/mutation from proxy, analyzing...")
+                query_text = schema.get('query', '')
                 
-                # Extract Query fields
-                query_fields = []
-                if 'type Query' in schema_text:
-                    print("[DEBUG] Extracting Query fields...")
-                    # Find the Query type definition
-                    query_start = schema_text.find('type Query')
-                    if query_start != -1:
-                        # Find the matching closing brace
-                        brace_count = 0
-                        query_end = query_start
-                        for i, char in enumerate(schema_text[query_start:]):
-                            if char == '{':
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    query_end = query_start + i
-                                    break
-                        
-                        query_section = schema_text[query_start:query_end]
-                        print("[DEBUG] Query section: " + query_section[:200] + "...")
-                        
-                        # Extract field names more carefully
-                        lines = query_section.split('\n')
-                        for line in lines:
-                            line = line.strip()
-                            if line and not line.startswith('#') and ':' in line and 'type Query' not in line:
-                                # Extract field name before parentheses or colon
-                                field_name = line.split('(')[0].split(':')[0].strip()
-                                if field_name and field_name not in ['type', 'Query']:
-                                    query_fields.append(field_name)
-                                    print("[DEBUG] Found query field: " + field_name)
+                # Extract actual field names and types from the query/mutation
+                extracted_fields = []
+                extracted_types = []
+                extracted_mutations = []
                 
-                # Extract Mutation fields  
-                mutation_fields = []
-                if 'type Mutation' in schema_text:
-                    print("[DEBUG] Extracting Mutation fields...")
-                    mutation_start = schema_text.find('type Mutation')
-                    if mutation_start != -1:
-                        # Find the matching closing brace
-                        brace_count = 0
-                        mutation_end = mutation_start
-                        for i, char in enumerate(schema_text[mutation_start:]):
-                            if char == '{':
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    mutation_end = mutation_start + i
-                                    break
-                        
-                        mutation_section = schema_text[mutation_start:mutation_end]
-                        print("[DEBUG] Mutation section: " + mutation_section[:200] + "...")
-                        
-                        lines = mutation_section.split('\n')
-                        for line in lines:
-                            line = line.strip()
-                            if line and not line.startswith('#') and ':' in line and 'type Mutation' not in line:
-                                field_name = line.split('(')[0].split(':')[0].strip()
-                                if field_name and field_name not in ['type', 'Mutation']:
-                                    mutation_fields.append(field_name)
-                                    print("[DEBUG] Found mutation field: " + field_name)
+                # Look for mutation operations
+                if query_text.strip().startswith('mutation'):
+                    # Extract mutation name and fields
+                    lines = query_text.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            # Find mutation calls like "deriveCrossSells(input: $input)"
+                            if '(' in line and '{' not in line and line != 'mutation' and not line.startswith('mutation '):
+                                mutation_name = line.split('(')[0].strip()
+                                if mutation_name and not mutation_name.startswith('...') and not mutation_name.startswith('__'):
+                                    extracted_mutations.append(mutation_name)
+                                    print("[DEBUG] Found mutation: " + mutation_name)
                 
-                if query_fields:
-                    summary.append("Query fields: " + ', '.join(query_fields))
-                if mutation_fields:
-                    summary.append("Mutation fields: " + ', '.join(mutation_fields))
+                # Extract field names from the query structure
+                import re
+                # Find all field references in the query
+                field_pattern = r'\b([a-zA-Z][a-zA-Z0-9_]*)\s*{'
+                matches = re.findall(field_pattern, query_text)
+                for match in matches:
+                    if match not in ['mutation', 'query', 'subscription'] and not match.startswith('__'):
+                        extracted_fields.append(match)
                 
-                # Add specific field info from the schema
-                summary.append("Available types: Dog, Veterinary")
-                summary.append("Auth fields: accessToken, veterinaryId")
+                # Extract type names from fragments and field selections
+                type_pattern = r'fragment\s+\w+\s+on\s+([A-Z][a-zA-Z0-9_]*)'
+                type_matches = re.findall(type_pattern, query_text)
+                extracted_types.extend(type_matches)
+                
+                # Extract variable types from the query definition
+                var_pattern = r'\$\w+:\s*([A-Z][a-zA-Z0-9_]*!?)'
+                var_matches = re.findall(var_pattern, query_text)
+                extracted_types.extend([t.replace('!', '') for t in var_matches])
+                
+                # Also look at variables if present
+                if 'variables' in schema and isinstance(schema['variables'], dict):
+                    for var_name, var_value in schema['variables'].items():
+                        if isinstance(var_value, dict):
+                            for key in var_value.keys():
+                                extracted_fields.append(key)
+                
+                # Remove duplicates and create summary
+                unique_mutations = list(set(extracted_mutations))
+                unique_fields = list(set(extracted_fields))
+                unique_types = list(set(extracted_types))
+                
+                if unique_mutations:
+                    summary.append("Mutation operations: " + ', '.join(unique_mutations))
+                if unique_fields:
+                    summary.append("Fields referenced: " + ', '.join(unique_fields[:10]))  # Limit to first 10
+                if unique_types:
+                    summary.append("Types used: " + ', '.join(unique_types[:8]))  # Limit to first 8
+                
+                # Add the actual query context for better understanding
+                summary.append("Query context: This is a " + ("mutation" if query_text.strip().startswith('mutation') else "query") + " operation")
+                
+                print("[DEBUG] Extracted mutations: " + str(unique_mutations))
+                print("[DEBUG] Extracted fields: " + str(unique_fields))
+                print("[DEBUG] Extracted types: " + str(unique_types))
                 
             elif isinstance(schema.get('query'), dict):
                 summary.append("Direct query object found - needs manual parsing")
