@@ -1,0 +1,39 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Burp Suite Montoya API for Burp extensions
+    compileOnly 'net.portswigger.burp.extender:montoya-api:2023.12.1'
+    
+    // Optional: Add other dependencies as needed
+    implementation 'org.json:json:20231013'
+}
+
+// Configure for Java 8 compatibility (Burp Suite requirement)
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+// Create a fat JAR with all dependencies
+task fatJar(type: Jar) {
+    manifest {
+        attributes 'Main-Class': 'BurpExtender'
+    }
+    baseName = project.name + '-all'
+    from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+    with jar
+}
+
+// Configure the jar task
+jar {
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
+}
+
+// Build configuration for BApp Store submission
+build.dependsOn fatJar
