@@ -1,4 +1,12 @@
+# Core requirements (Jython/Burp Suite compatible)
 requests>=2.31.0
 openai>=1.3.0
 graphql-core>=3.2.3
 jython-standalone>=2.7.3
+
+# RAG integration requirements (CPython only - not available in Burp Suite/Jython)
+# These are optional - the extension will work without them using built-in security knowledge
+# To use RAG features, run the extension in a CPython environment
+faiss-cpu>=1.7.4
+langchain>=0.1.0
+sentence-transformers>=2.2.2
