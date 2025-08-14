@@ -123,7 +123,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         gbc.gridx = 1
         gbc.fill = GridBagConstraints.HORIZONTAL
         gbc.weightx = 1.0
-        self.llm_endpoint_field = JTextField("http://localhost:11434/api/generate")
+        self.llm_endpoint_field = JTextField("http://192.168.86.199:1234/v1/chat/completions")
         config_panel.add(self.llm_endpoint_field, gbc)
         
         gbc.gridx = 0
@@ -159,7 +159,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener, 
         gbc.gridx = 1
         gbc.fill = GridBagConstraints.HORIZONTAL
         gbc.weightx = 1.0
-        self.test_type_field = JTextField("SQL Injection, Authorization Bypass, DoS")
+        self.test_type_field = JTextField("Graphql, query, mutation, alias, learn, SQL Injection, Authorization Bypass, DoS, Cross site Scripting, Command Injection, Log Injection, HTML Injection, Server Side Request Forgery, Field Duplication attack")
         config_panel.add(self.test_type_field, gbc)
         
         gbc.gridx = 0
@@ -1614,7 +1614,7 @@ class GPTQueryGenerator:
                 print("[DEBUG] No RAG context retrieved")
             
             prompt = """
-You are a security researcher testing a specific GraphQL query/mutation. Based on the schema provided, the security knowledge base, and the target query below, generate malicious variants to test for security vulnerabilities.
+You are a security researcher and penetration tester testing a specific GraphQL query/mutation. Based on the schema provided, the security knowledge base, and the target query below, generate malicious variants to test for each of the security vulnerabilities listed below.
 
 SCHEMA:
 {0}
@@ -1627,6 +1627,15 @@ TASK: Create malicious variants of the target query above to test for:
 - Data exfiltration (request additional sensitive fields that exist in schema)
 - Input validation bypass (inject malicious payloads into variables/parameters)
 - SQL injection attempts (modify string/ID parameters with injection payloads)
+- Alias based attacks (use aliases to perform dos attacks)
+- Denial of Service (deeply nested queries, large result sets)
+- Cross Site Scripting (XSS) (inject script tags into string fields)
+- Command Injection (inject OS commands into string fields)
+- Log Injection (inject log commands into string fields)
+- HTML Injection (inject HTML tags into string fields)
+- Server Side Request Forgery (SSRF) (try to access internal services)
+- Field Duplication attacks (duplicate fields to exhaust resources)
+
 
 Use the security knowledge base above to inform your testing approaches and techniques.
 
@@ -1635,13 +1644,25 @@ REQUIREMENTS:
 2. Only use field names and types that exist in the provided schema
 3. If the target query uses variables, create variants with malicious variable values
 4. Keep the same operation type (query/mutation) as the target
-5. Generate 4-6 different malicious variants
+5. Generate different malicious variants for each attack vector specified in Task
 6. Each variant should test a different attack vector
 7. Look at the schema and find the exact query/mutation that matches the target query structure and use it as a base for variants.
 8. If the target query is a mutation, ensure the variants are also mutations with malicious inputs.
 9. If the target query is a query, ensure the variants are also queries with malicious inputs.
 10. Do not invent fields that do not exist in the schema.
 11. Apply security testing techniques from the knowledge base where applicable.
+12. Use the provided schema to construct malicious output. Only use fields and types that exist in the schema under that query/mutation.
+13. Understand the structure of the target query and maintain it in the variants.
+14. Always refer to the schema for valid field names and types.
+15. Exact Structure Preservation: Use the exact field and argument structure of the target query/mutation.
+16. Do not add or remove top-level fields unless the attack vector requires it (e.g., adding extra fields for data exfiltration).
+17. Schema Validity: All fields, arguments, and types must exist in the provided schema.
+18. Never invent names or types.
+19. Variable Handling: If the target uses variables, keep variable names the same. 
+20. Ensure all modified variables still match the declared GraphQL type (e.g., inject SQL payloads into strings, not ints).
+21. If the query uses inline arguments instead of variables, place payloads directly into those arguments.
+22. One Attack Vector per Variant: Generate one distinct variant for each vulnerability type listed above. Each variant must only target one vulnerability type.
+23. Operation Type Consistency: If the target is a query, all variants must be queries. If the target is a mutation, all variants must be mutations.
 
 Return only valid GraphQL queries that maintain the target query's structure while adding malicious elements.
 """.format(schema_summary, target_query, rag_context_str)
@@ -1846,9 +1867,15 @@ Return only valid GraphQL queries, one per section separated by triple backticks
         try:
             print("[DEBUG] _extract_queries_from_response called with content length: " + str(len(content)))
             
-            # Clean Unicode characters first to prevent encoding issues
+            # Clean Unicode characters and unescape JSON strings first to prevent encoding issues
             try:
                 if hasattr(content, 'replace'):
+                    # First, unescape JSON-encoded strings (common issue with LLM API responses)
+                    content = content.replace('\\n', '\n')  # Convert \n to actual newlines
+                    content = content.replace('\\t', '\t')  # Convert \t to actual tabs  
+                    content = content.replace('\\"', '"')   # Convert \" to actual quotes
+                    content = content.replace('\\\\', '\\') # Convert \\ to actual backslashes
+                    
                     # Handle common Unicode characters that cause issues in Jython
                     content = content.replace(u'\u2013', u'-')  # en dash
                     content = content.replace(u'\u2014', u'-')  # em dash  
@@ -1863,7 +1890,7 @@ Return only valid GraphQL queries, one per section separated by triple backticks
                     if 'unicode' in str(type(content)):
                         content = content.encode('ascii', 'replace').decode('ascii')
                 
-                print("[DEBUG] Content preview after Unicode cleanup: " + content[:300] + "...")
+                print("[DEBUG] Content preview after Unicode cleanup and JSON unescaping: " + content[:300] + "...")
             except Exception as e:
                 print("[DEBUG] Unicode cleanup failed: " + str(e))
                 try:
