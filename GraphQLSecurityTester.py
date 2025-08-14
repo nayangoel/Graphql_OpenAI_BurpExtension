@@ -1738,6 +1738,12 @@ TASK: Generate comprehensive security test queries for:
 - Input validation bypass (inject malicious payloads into input fields)
 - DoS attacks (deeply nested queries, large result sets)
 - Information disclosure (introspection, error enumeration)
+- Cross Site Scripting
+- Command Injection
+- HTML Injection
+- Log Injection
+- Alias based DoS
+- Server Side Request Forgery 
 
 Use the security knowledge base above to inform your testing approaches and techniques.
 
