@@ -241,3 +241,8 @@ This extension is designed for defensive security testing. When contributing:
 - Enhanced RAG connectivity with fallback HTTP methods
 - Improved error handling and debugging capabilities
 - Added protection against duplicate expensive operations
+
+## Contributors
+Thanks to all the people who already contributed!
+- **Nayan Goel**
+- **Nandan Gupta**
